@@ -100,7 +100,6 @@ func New(opts Options) (*Server, error) {
 		CoverCachePath: opts.CoverCachePath,
 		PodcastsPath:   opts.PodcastPath,
 		MusicPaths:     opts.MusicPaths,
-		Jukebox:        &jukebox.Jukebox{},
 		Scrobblers:     []scrobble.Scrobbler{&lastfm.Scrobbler{DB: opts.DB}, &listenbrainz.Scrobbler{}},
 		Podcasts:       podcast,
 		Transcoder:     cacheTranscoder,
@@ -118,7 +117,10 @@ func New(opts Options) (*Server, error) {
 	}
 
 	if opts.JukeboxEnabled {
-		jukebox := jukebox.New()
+		jukebox, err := jukebox.New(transcode.NewFFmpegTranscoder(), transcode.PCM16le, jukebox.OtoPlayer)
+		if err != nil {
+			return nil, fmt.Errorf("create jukebox: %w", err)
+		}
 		ctrlSubsonic.Jukebox = jukebox
 		server.jukebox = jukebox
 	}
@@ -363,7 +365,8 @@ func (s *Server) StartScanWatcher() (FuncExecute, FuncInterrupt) {
 func (s *Server) StartJukebox() (FuncExecute, FuncInterrupt) {
 	return func() error {
 			log.Printf("starting job 'jukebox'\n")
-			return s.jukebox.Listen()
+			s.jukebox.WatchForItems()
+			return nil
 		}, func(_ error) {
 			// stop job
 			s.jukebox.Quit()
