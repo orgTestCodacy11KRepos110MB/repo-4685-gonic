@@ -42,26 +42,43 @@ var (
 	Opus128RG     = NewProfile("audio/ogg", "opus", 128, `ffmpeg -v 0 -i <file> -ss <seek> -map 0:a:0 -vn -b:a <bitrate> -c:a libopus -vbr on -af "volume=replaygain=track:replaygain_preamp=6dB:replaygain_noclip=0, alimiter=level=disabled, asidedata=mode=delete:type=REPLAYGAIN" -metadata replaygain_album_gain= -metadata replaygain_album_peak= -metadata replaygain_track_gain= -metadata replaygain_track_peak= -metadata r128_album_gain= -metadata r128_track_gain= -f opus -`)
 	Opus128RGLoud = NewProfile("audio/ogg", "opus", 128, `ffmpeg -v 0 -i <file> -ss <seek> -map 0:a:0 -vn -b:a <bitrate> -c:a libopus -vbr on -af "aresample=96000:resampler=soxr, volume=replaygain=track:replaygain_preamp=15dB:replaygain_noclip=0, alimiter=level=disabled, asidedata=mode=delete:type=REPLAYGAIN" -metadata replaygain_album_gain= -metadata replaygain_album_peak= -metadata replaygain_track_gain= -metadata replaygain_track_peak= -metadata r128_album_gain= -metadata r128_track_gain= -f opus -`)
 
-	PCM16le = NewProfile("audio/wav", "wav", 0, `ffmpeg -v 0 -i <file> -ss <seek> -c:a pcm_s16le -ac 2 -f s16le -`)
+	PCM16le = NewProfilePCM("audio/wav", "wav", SampleRate(44_100), 16, 2, `ffmpeg -v 0 -i <file> -ss <seek> -c:a pcm_s16le -ac <numchannels> -ar <samplerate> -f s16le -`)
 )
 
-type BitRate int // kb/s
+type BitRate uint    // kilobits/s
+type SampleRate uint // Hz
 
 type Profile struct {
-	bitrate BitRate // the default bitrate, but the user can request a different one
-	seek    time.Duration
-	mime    string
-	suffix  string
-	exec    string
+	bitrate       BitRate // the default bitrate, but the user can request a different one
+	sampleRate    SampleRate
+	bitsPerSample uint
+	numChannels   uint
+
+	seek   time.Duration
+	mime   string
+	suffix string
+	exec   string
 }
 
-func (p *Profile) BitRate() BitRate    { return p.bitrate }
-func (p *Profile) Seek() time.Duration { return p.seek }
-func (p *Profile) Suffix() string      { return p.suffix }
-func (p *Profile) MIME() string        { return p.mime }
+func (p *Profile) BitRate() BitRate       { return p.bitrate }
+func (p *Profile) SampleRate() SampleRate { return p.sampleRate }
+func (p *Profile) BitsPerSample() uint    { return p.bitsPerSample }
+func (p *Profile) NumChannels() uint      { return p.numChannels }
+func (p *Profile) Seek() time.Duration    { return p.seek }
+func (p *Profile) Suffix() string         { return p.suffix }
+func (p *Profile) MIME() string           { return p.mime }
 
 func NewProfile(mime string, suffix string, bitrate BitRate, exec string) Profile {
 	return Profile{mime: mime, suffix: suffix, bitrate: bitrate, exec: exec}
+}
+func NewProfilePCM(mime string, suffix string, sampleRate SampleRate, bitsPerSample uint, numChannels uint, exec string) Profile {
+	return Profile{
+		mime:       mime,
+		suffix:     suffix,
+		bitrate:    BitRate(uint(sampleRate) * bitsPerSample * numChannels),
+		sampleRate: sampleRate, bitsPerSample: bitsPerSample, numChannels: numChannels,
+		exec: exec,
+	}
 }
 
 func WithBitrate(p Profile, bitRate BitRate) Profile {
@@ -97,6 +114,12 @@ func parseProfile(profile Profile, in string) (string, []string, error) {
 			args = append(args, fmt.Sprintf("%dus", profile.Seek().Microseconds()))
 		case "<bitrate>":
 			args = append(args, fmt.Sprintf("%dk", profile.BitRate()))
+		case "<samplerate>":
+			args = append(args, fmt.Sprintf("%d", profile.SampleRate()))
+		case "<bitspersample>":
+			args = append(args, fmt.Sprintf("%d", profile.BitsPerSample()))
+		case "<numchannels>":
+			args = append(args, fmt.Sprintf("%d", profile.NumChannels()))
 		default:
 			args = append(args, p)
 		}
