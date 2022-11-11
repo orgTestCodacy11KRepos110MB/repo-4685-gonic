@@ -57,6 +57,7 @@ func (j *Jukebox) WatchForItems() {
 	for {
 		select {
 		case item := <-j.next:
+			j.player.Pause()
 			if prevCancel != nil {
 				prevCancel()
 			}
@@ -79,9 +80,7 @@ func (j *Jukebox) WatchForItems() {
 
 func (j *Jukebox) decodeToStream(ctx context.Context, item *playlist.Item) {
 	profile := transcode.WithSeek(j.profile, item.Seek())
-	if item.Seek() == 0 {
-		j.clearBuffer()
-	}
+	j.clearBuffer()
 	j.Play()
 	err := j.transcoder.Transcode(ctx, profile, item.Path(), j.pcmw)
 	if errors.Is(ctx.Err(), context.Canceled) {
