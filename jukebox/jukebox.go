@@ -4,158 +4,206 @@
 package jukebox
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"io"
-	"log"
-	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
-	"go.senan.xyz/gonic/countrw"
-	"go.senan.xyz/gonic/jukebox/playlist"
-	"go.senan.xyz/gonic/transcode"
+	"github.com/dexterlb/mpvipc"
+	"github.com/mitchellh/mapstructure"
+	"golang.org/x/exp/slices"
 )
 
 type Jukebox struct {
-	transcoder transcode.Transcoder
-	profile    transcode.Profile
-	pcmw       io.Writer
-	pcmr       *countrw.CountReader
-
-	player Player
-
-	playlist *playlist.Playlist
-	next     chan *playlist.Item
-	quit     chan struct{}
+	cmd  *exec.Cmd
+	conn *mpvipc.Connection
 }
 
-func New(transcoder transcode.Transcoder, profile transcode.Profile, playerFunc PlayerFunc) (*Jukebox, error) {
+func New(sockPath string, mpvExtraArgs []string) (*Jukebox, error) {
+	var mpvArgs []string
+	mpvArgs = append(mpvArgs, "--idle", "--no-config", "--no-video", mpvArg("--audio-display", "no"), mpvArg("--input-ipc-server", sockPath))
+	mpvArgs = append(mpvArgs, mpvExtraArgs...)
 	var j Jukebox
-	j.transcoder = transcoder
-	j.profile = profile
-
-	pcmr, pcmw := io.Pipe()
-	j.pcmw = pcmw
-	j.pcmr = countrw.NewCountReader(pcmr)
-
-	var err error
-	j.player, err = playerFunc(j.pcmr, profile)
-	if err != nil {
-		return nil, fmt.Errorf("create player: %w", err)
+	j.cmd = exec.Command("mpv", mpvArgs...)
+	if err := j.cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start mpv process: %w", err)
 	}
-
-	j.playlist = playlist.New()
-	j.next = make(chan *playlist.Item)
-	j.quit = make(chan struct{})
-
+	j.cmd.Stdout = os.Stdout
+	j.cmd.Stderr = os.Stderr
+	time.Sleep(500 * time.Millisecond)
+	j.conn = mpvipc.NewConnection(sockPath)
+	if err := j.conn.Open(); err != nil {
+		return nil, fmt.Errorf("open connection: %w", err)
+	}
 	return &j, nil
 }
 
-func (j *Jukebox) WatchForItems() {
-	var prevCancel context.CancelFunc
-	for {
-		select {
-		case item := <-j.next:
-			j.player.Pause()
-			if prevCancel != nil {
-				prevCancel()
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() {
-				j.decodeToStream(ctx, item)
-				cancel()
-			}()
-			prevCancel = cancel
-		case <-j.quit:
-			if prevCancel != nil {
-				prevCancel()
-			}
-			j.clearBuffer()
-			j.playlist.Reset()
-			break
-		}
+func (j *Jukebox) GetItems() ([]string, error) {
+	var resp mpvPlaylist
+	if err := j.getDecode(&resp, "playlist"); err != nil {
+		return nil, fmt.Errorf("get playlist: %w", err)
 	}
+	var items []string
+	for _, item := range resp {
+		items = append(items, item.Filename)
+	}
+	return items, nil
 }
 
-func (j *Jukebox) decodeToStream(ctx context.Context, item *playlist.Item) {
-	profile := transcode.WithSeek(j.profile, item.Seek())
-	j.clearBuffer()
-	j.Play()
-	err := j.transcoder.Transcode(ctx, profile, item.Path(), j.pcmw)
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return
-	}
+func (j *Jukebox) SetItems(items []string) error {
+	tmp, cleanup, err := tmp()
 	if err != nil {
-		log.Printf("decoding item: %v", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
+	defer cleanup()
+	for _, item := range items {
+		item, _ = filepath.Abs(item)
+		fmt.Fprintln(tmp, item)
+	}
+	if _, err := j.conn.Call("loadlist", tmp.Name()); err != nil {
+		return fmt.Errorf("load list: %w", err)
+	}
+	return nil
+}
 
-	item, err = j.playlist.Inc()
+func (j *Jukebox) AppendItems(items []string) error {
+	tmp, cleanup, err := tmp()
 	if err != nil {
-		return
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	j.next <- item
-}
-
-func (j *Jukebox) GetItems() []*playlist.Item         { return j.playlist.Items() }
-func (j *Jukebox) SetItems(items []*playlist.Item)    { j.playlist.SetItems(items) }
-func (j *Jukebox) RemoveItem(i int) error             { return j.playlist.RemoveItem(i) }
-func (j *Jukebox) AppendItems(items []*playlist.Item) { j.playlist.AppendItems(items) }
-
-func (j *Jukebox) Skip(i int, offsetSecs int) {
-	item, err := j.playlist.Set(i)
-	if err != nil {
-		return
+	defer cleanup()
+	for _, item := range items {
+		fmt.Fprintln(tmp, item)
 	}
-	item.SetSeek(time.Duration(offsetSecs) * time.Second)
-	j.next <- item
-}
-
-func (j *Jukebox) ClearItems() {
-	j.playlist.Reset()
-	j.clearBuffer()
-}
-
-func (j *Jukebox) Quit() {
-	j.playlist.Reset()
-	j.clearBuffer()
-	close(j.quit)
-}
-
-func (j *Jukebox) Pause() { j.player.Pause() }
-func (j *Jukebox) Play() {
-	j.player.Play()
-	if item, _ := j.playlist.IncIfEmpty(); item != nil {
-		j.next <- item
+	if _, err := j.conn.Call("loadlist", tmp.Name(), "append"); err != nil {
+		return fmt.Errorf("load list: %w", err)
 	}
+	return nil
 }
 
-func (j *Jukebox) SetGain(v float64) { j.player.SetVolume(v) }
-func (j *Jukebox) GetGain() float64  { return j.player.Volume() }
+func (j *Jukebox) RemoveItem(i int) error {
+	if _, err := j.conn.Call("playlist-remove", i); err != nil {
+		return fmt.Errorf("playlist remove: %w", err)
+	}
+	return nil
+}
 
-func (j *Jukebox) clearBuffer() {
-	j.player.Reset() // clear oto's buffer
-	j.pcmr.Reset()   // clear our counter of how many bytes oto has read
+func (j *Jukebox) Skip(i int, offsetSecs int) error {
+	if _, err := j.conn.Call("playlist-play-index", i); err != nil {
+		return fmt.Errorf("playlist play index: %w", err)
+	}
+	if _, err := j.conn.Call("seek", offsetSecs, "absolute"); err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) ClearItems() error {
+	if _, err := j.conn.Call("playlist-clear"); err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) Quit() error {
+	if _, err := j.conn.Call("quit"); err != nil {
+		return fmt.Errorf("quit: %w", err)
+	}
+	if err := j.cmd.Wait(); err != nil {
+		return fmt.Errorf("wait to quit: %w", err)
+	}
+	if err := j.conn.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) Pause() error {
+	if err := j.conn.Set("pause", true); err != nil {
+		return fmt.Errorf("pause: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) Play() error {
+	if err := j.conn.Set("pause", false); err != nil {
+		return fmt.Errorf("pause: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) SetGainPct(v int) error {
+	if err := j.conn.Set("volume", v); err != nil {
+		return fmt.Errorf("set volume: %w", err)
+	}
+	return nil
+}
+
+func (j *Jukebox) GetGain() (float64, error) {
+	var volume float64
+	if err := j.getDecode(&volume, "volume"); err != nil {
+		return 0, fmt.Errorf("get volume: %w", err)
+	}
+	return volume, nil
 }
 
 type Status struct {
 	CurrentIndex int
 	Playing      bool
-	Gain         float64
+	GainPct      int
 	Position     int
 }
 
-func (j *Jukebox) GetStatus() Status {
+func (j *Jukebox) GetStatus() (*Status, error) {
 	var status Status
-	if i, item := j.playlist.Peek(); item != nil {
-		playedBits := (j.pcmr.Count() - uint64(j.player.UnplayedBufferSize())) * 8
-		playedSecs := float64(playedBits) / float64(j.profile.BitRate())
-		seekedSecs := item.Seek().Seconds()
+	_ = j.getDecode(&status.Position, "time-pos") // property may not always be there
+	_ = j.getDecode(&status.GainPct, "volume")    // property may not always be there
 
-		status.Position = int(math.Round(playedSecs + seekedSecs))
-		status.CurrentIndex = i
+	var paused bool
+	_ = j.getDecode(&paused, "pause") // property may not always be there
+	status.Playing = !paused
+
+	var playlist mpvPlaylist
+	_ = j.getDecode(&playlist, "playlist")
+
+	status.CurrentIndex = slices.IndexFunc(playlist, func(pl mpvPlaylistItem) bool {
+		return pl.Current
+	})
+
+	return &status, nil
+}
+
+func (j *Jukebox) getDecode(dest any, property string) error {
+	raw, err := j.conn.Get(property)
+	if err != nil {
+		return fmt.Errorf("get property: %w", err)
 	}
-	status.Gain = j.player.Volume()
-	status.Playing = j.player.IsPlaying()
-	return status
+	if err := mapstructure.Decode(raw, dest); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	return nil
+}
+
+type mpvPlaylist []mpvPlaylistItem
+type mpvPlaylistItem struct {
+	ID       int
+	Filename string
+	Current  bool
+	Playing  bool
+}
+
+func tmp() (*os.File, func(), error) {
+	tmp, err := os.CreateTemp("", "gonic-jukebox-")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temp file: %w", err)
+	}
+	return tmp, func() {
+		os.Remove(tmp.Name())
+		tmp.Close()
+	}, nil
+}
+
+func mpvArg(k, v string) string {
+	return fmt.Sprintf("%s=%s", k, v)
 }

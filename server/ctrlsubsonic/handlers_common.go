@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/jinzhu/gorm"
 
 	"go.senan.xyz/gonic/db"
-	"go.senan.xyz/gonic/jukebox/playlist"
 	"go.senan.xyz/gonic/multierr"
 	"go.senan.xyz/gonic/scanner"
 	"go.senan.xyz/gonic/server/ctrlsubsonic/params"
@@ -275,31 +275,43 @@ func (c *Controller) ServeGetRandomSongs(r *http.Request) *spec.Response {
 func (c *Controller) ServeJukebox(r *http.Request) *spec.Response {
 	params := r.Context().Value(CtxParams).(params.Params)
 	user := r.Context().Value(CtxUser).(*db.User)
-	createPlaylistItems := func(ids []specid.ID) ([]*playlist.Item, error) {
-		var items []*playlist.Item
+	trackPaths := func(ids []specid.ID) ([]string, error) {
+		var paths []string
 		for _, id := range ids {
 			var track db.Track
 			if err := c.DB.Preload("Album").Preload("TrackStar", "user_id=?", user.ID).Preload("TrackRating", "user_id=?", user.ID).First(&track, id.Value).Error; err != nil {
 				return nil, fmt.Errorf("find track by id: %w", err)
 			}
-			items = append(items, playlist.NewItem(id.Value, track.AbsPath()))
+			paths = append(paths, track.AbsPath())
 		}
-		return items, nil
+		return paths, nil
 	}
-	getStatus := func() spec.JukeboxStatus {
-		status := c.Jukebox.GetStatus()
-		return spec.JukeboxStatus{
+	getSpecStatus := func() (*spec.JukeboxStatus, error) {
+		status, err := c.Jukebox.GetStatus()
+		if err != nil {
+			return nil, fmt.Errorf("get status: %w", err)
+		}
+		return &spec.JukeboxStatus{
 			CurrentIndex: status.CurrentIndex,
-			Playing:      status.Playing,
-			Gain:         status.Gain,
+			Playing:      status.Paused,
+			Gain:         float64(status.GainPct) / 100.0,
 			Position:     status.Position,
-		}
+		}, nil
 	}
-	getStatusTracks := func() ([]*spec.TrackChild, error) {
+	getSpecPlaylist := func() ([]*spec.TrackChild, error) {
 		var ret []*spec.TrackChild
-		for _, item := range c.Jukebox.GetItems() {
+		playlist, err := c.Jukebox.GetItems()
+		if err != nil {
+			return nil, fmt.Errorf("get playlist: %w", err)
+		}
+		for _, path := range playlist {
 			var track db.Track
-			if err := c.DB.Preload("Album").First(&track, item.ID()).Error; err != nil {
+			err := c.DB.
+				Where(`(albums.root_dir || ? || albums.left_path || albums.right_path || ? || tracks.filename)=?`, path).
+				Joins(`JOIN albums ON tracks.album_id=albums.id`).First(&track).
+				Preload("Album").
+				Error
+			if err != nil {
 				return nil, fmt.Errorf("fetch track: %w", err)
 			}
 			ret = append(ret, spec.NewTrackByTags(&track, track.Album))
@@ -313,23 +325,29 @@ func (c *Controller) ServeJukebox(r *http.Request) *spec.Response {
 		if err != nil {
 			return spec.NewError(10, "please provide a valid list of ids")
 		}
-		playlistItems, err := createPlaylistItems(ids)
+		paths, err := trackPaths(ids)
 		if err != nil {
-			return spec.NewError(10, "error creating playlist items: %v", err)
+			return spec.NewError(0, "error creating playlist items: %v", err)
 		}
-		c.Jukebox.SetItems(playlistItems)
+		if err := c.Jukebox.SetItems(paths); err != nil {
+			return spec.NewError(0, "error setting items: %v", err)
+		}
 	case "add":
 		ids, err := params.GetIDList("id")
 		if err != nil {
 			return spec.NewError(10, "please provide a valid list of ids")
 		}
-		playlistItems, err := createPlaylistItems(ids)
+		paths, err := trackPaths(ids)
 		if err != nil {
 			return spec.NewError(10, "error creating playlist items: %v", err)
 		}
-		c.Jukebox.AppendItems(playlistItems)
+		if err := c.Jukebox.AppendItems(paths); err != nil {
+			return spec.NewError(0, "error appending items: %v", err)
+		}
 	case "clear":
-		c.Jukebox.ClearItems()
+		if err := c.Jukebox.ClearItems(); err != nil {
+			return spec.NewError(0, "error clearing items: %v", err)
+		}
 	case "remove":
 		index, err := params.GetInt("index")
 		if err != nil {
@@ -339,25 +357,35 @@ func (c *Controller) ServeJukebox(r *http.Request) *spec.Response {
 			return spec.NewError(0, "error removing: %v", err)
 		}
 	case "stop":
-		c.Jukebox.Pause()
+		if err := c.Jukebox.Pause(); err != nil {
+			return spec.NewError(0, "error pausing: %v", err)
+		}
 	case "start":
-		c.Jukebox.Play()
+		if err := c.Jukebox.Play(); err != nil {
+			return spec.NewError(0, "error starting: %v", err)
+		}
 	case "skip":
 		index, err := params.GetInt("index")
 		if err != nil {
 			return spec.NewError(10, "please provide an index for skip actions")
 		}
 		offset, _ := params.GetInt("offset")
-		c.Jukebox.Skip(index, offset)
+		if err := c.Jukebox.Skip(index, offset); err != nil {
+			return spec.NewError(0, "error skipping: %v", err)
+		}
 	case "get":
-		statusTracks, err := getStatusTracks()
+		specPlaylist, err := getSpecPlaylist()
 		if err != nil {
 			return spec.NewError(10, "error getting status tracks: %v", err)
 		}
+		status, err := getSpecStatus()
+		if err != nil {
+			return spec.NewError(10, "error getting status: %v", err)
+		}
 		sub := spec.NewResponse()
 		sub.JukeboxPlaylist = &spec.JukeboxPlaylist{
-			JukeboxStatus: getStatus(),
-			List:          statusTracks,
+			JukeboxStatus: status,
+			List:          specPlaylist,
 		}
 		return sub
 	case "setGain":
@@ -365,11 +393,16 @@ func (c *Controller) ServeJukebox(r *http.Request) *spec.Response {
 		if err != nil {
 			return spec.NewError(10, "please provide a valid gain param")
 		}
-		c.Jukebox.SetGain(gain)
+		if err := c.Jukebox.SetGainPct(int(math.Min(gain, 1) * 100)); err != nil {
+			return spec.NewError(0, "error setting gain: %v", err)
+		}
 	}
 	// all actions except get are expected to return a status
+	status, err := getSpecStatus()
+	if err != nil {
+		return spec.NewError(10, "error getting status: %v", err)
+	}
 	sub := spec.NewResponse()
-	status := getStatus()
-	sub.JukeboxStatus = &status
+	sub.JukeboxStatus = status
 	return sub
 }

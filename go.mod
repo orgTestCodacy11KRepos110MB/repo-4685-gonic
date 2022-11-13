@@ -4,6 +4,8 @@ go 1.19
 
 require (
 	github.com/Masterminds/sprig v2.22.0+incompatible
+	github.com/davecgh/go-spew v1.1.1
+	github.com/dexterlb/mpvipc v0.0.0-20210824102722-5d27ef06b6c3
 	github.com/disintegration/imaging v1.6.2
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fsnotify/fsnotify v1.6.0
@@ -11,11 +13,11 @@ require (
 	github.com/gorilla/mux v1.8.0
 	github.com/gorilla/securecookie v1.1.1
 	github.com/gorilla/sessions v1.2.1
-	github.com/hajimehoshi/oto/v2 v2.3.1
 	github.com/jinzhu/gorm v1.9.17-0.20211120011537-5c235b72a414
 	github.com/josephburnett/jd v1.5.2
 	github.com/matryer/is v1.4.0
 	github.com/mattn/go-sqlite3 v1.14.16
+	github.com/mitchellh/mapstructure v1.5.0
 	github.com/mmcdole/gofeed v1.1.3
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
 	github.com/nicksellen/audiotags v0.0.0-20160226222119-94015fa599bd
@@ -51,10 +53,12 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/stretchr/testify v1.7.0 // indirect
 	golang.org/x/crypto v0.2.0 // indirect
+	golang.org/x/exp v0.0.0-20221111204811-129d8d6c17ab // indirect
 	golang.org/x/image v0.1.0 // indirect
 	golang.org/x/net v0.2.0 // indirect
 	golang.org/x/sys v0.2.0 // indirect
 	golang.org/x/text v0.4.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
