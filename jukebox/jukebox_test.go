@@ -15,7 +15,7 @@ import (
 
 func TestPlay(t *testing.T) {
 	t.Parallel()
-	j, audioPipe := newJukebox(t)
+	j, audioPipePath := newJukebox(t)
 	is := is.New(t)
 
 	is.NoErr(j.SetItems([]string{
@@ -28,6 +28,30 @@ func TestPlay(t *testing.T) {
 	status, err := j.GetStatus()
 	is.NoErr(err)
 	is.Equal(status.Playing, true)
+
+	audioPipe, err := os.OpenFile(audioPipePath, os.O_RDONLY, os.ModeNamedPipe)
+	is.NoErr(err)
+	defer audioPipe.Close()
+
+	progressSecs := func(n int) {
+		reader := io.LimitReader(audioPipe, mpvPipeSecondsToBytes(n))
+		for {
+			fmt.Printf("+++ ||||||||||\n")
+			n, _ := io.CopyN(io.Discard, reader, 1<<16)
+			if n < (1 << 16) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	progressSecs(1)
+
+	fmt.Printf("+++ xxxxxxxxxx\n")
+	status, err = j.GetStatus()
+	fmt.Printf("+++ yyyyyyyyyy\n")
+	is.NoErr(err)
+	is.Equal(status.Playing, true)
 	is.Equal(status.CurrentIndex, 0)
 	is.Equal(status.Playing, true)
 	is.Equal(status.Position, 0)
@@ -35,7 +59,9 @@ func TestPlay(t *testing.T) {
 
 	is.NoErr(j.Play())
 
+	fmt.Printf("+++ zzzzzzzzzz\n")
 	status, err = j.GetStatus()
+	fmt.Printf("+++ {{{{{{{{{{\n")
 	is.NoErr(err)
 	is.Equal(status.CurrentIndex, 0)
 	is.Equal(status.Playing, true)
@@ -55,13 +81,8 @@ func TestPlay(t *testing.T) {
 	is.Equal(status.Playing, true)
 	is.Equal(status.Position, 0)
 
-	fmt.Printf("+++ eeeeeeeeee\n")
-	d, err := io.ReadAll(io.LimitReader(audioPipe, mpvPipeSecondsToBytes(5)))
-	fmt.Printf("+++ ffffffffff\n")
-	is.NoErr(err)
-	fmt.Printf("+++ got %d\n", len(d))
+	progressSecs(1)
 
-	time.Sleep(10 * time.Second)
 	status, err = j.GetStatus()
 	is.NoErr(err)
 	is.Equal(status.CurrentIndex, 0)
@@ -191,11 +212,11 @@ func mpvPipeSecondsToBytes(secs int) int64 {
 	return int64(secs * mpvPipeSampleRate * mpvPipeBitDepthBytes * mpvPipeNumChannels)
 }
 
-func newJukebox(t *testing.T) (*jukebox.Jukebox, *os.File) {
+func newJukebox(t *testing.T) (*jukebox.Jukebox, string) {
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	audioPipePath := filepath.Join(t.TempDir(), "audio")
 
-	if err := unix.Mkfifo(audioPipePath, 0777); err != nil {
+	if err := unix.Mkfifo(audioPipePath, 0666); err != nil {
 		t.Fatalf("create audio pipe: %v", err)
 	}
 
@@ -205,7 +226,7 @@ func newJukebox(t *testing.T) (*jukebox.Jukebox, *os.File) {
 			jukebox.MPVArg("--audio-samplerate", mpvPipeSampleRate),
 			jukebox.MPVArg("--audio-format", "s16"),
 			jukebox.MPVArg("--audio-channels", "stereo"),
-			jukebox.MPVArg("--ao", "null"),
+			jukebox.MPVArg("--ao", "pcm"),
 			jukebox.MPVArg("--ao-pcm-file", audioPipePath),
 			jukebox.MPVArg("--ao-pcm-waveheader", false),
 		})
@@ -216,16 +237,7 @@ func newJukebox(t *testing.T) (*jukebox.Jukebox, *os.File) {
 		j.Quit()
 	})
 
-	fmt.Printf("+++ cccccccccc\n")
-	audioPipe, err := os.OpenFile(audioPipePath, os.O_RDONLY, os.ModeNamedPipe)
-	fmt.Printf("+++ dddddddddd\n")
-	if err != nil {
-		t.Fatalf("error opening audio pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		audioPipe.Close()
-	})
-	return j, audioPipe
+	return j, audioPipePath
 }
 
 // var ErrTimeout = fmt.Errorf("timeout")

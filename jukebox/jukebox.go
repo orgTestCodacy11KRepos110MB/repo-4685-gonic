@@ -31,8 +31,14 @@ func New(sockPath string, mpvExtraArgs []string) (*Jukebox, error) {
 		return nil, fmt.Errorf("start mpv process: %w", err)
 	}
 
-	// wait for mpv process to be ready please
-	time.Sleep(500 * time.Millisecond)
+	ok := waitUntil(5*time.Second, func() bool {
+		_, err := os.Stat(sockPath)
+		return err == nil
+	})
+	if !ok {
+		_ = j.cmd.Process.Kill()
+		return nil, fmt.Errorf("mpv never started")
+	}
 
 	j.conn = mpvipc.NewConnection(sockPath)
 	if err := j.conn.Open(); err != nil {
@@ -195,6 +201,34 @@ type mpvPlaylistItem struct {
 	Playing  bool
 }
 
+func MPVArg(k string, v any) string {
+	if v, ok := v.(bool); ok {
+		if v {
+			return fmt.Sprintf("%s=yes", k)
+		}
+		return fmt.Sprintf("%s=no", k)
+	}
+	return fmt.Sprintf("%s=%v", k, v)
+}
+
+func waitUntil(interval time.Duration, f func() bool) bool {
+	check := time.NewTicker(50 * time.Millisecond)
+	defer check.Stop()
+	timeout := time.NewTicker(interval)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-timeout.C:
+			return false
+		case <-check.C:
+			if f() {
+				return true
+			}
+		}
+	}
+}
+
 func tmp() (*os.File, func(), error) {
 	tmp, err := os.CreateTemp("", "gonic-jukebox-")
 	if err != nil {
@@ -205,14 +239,4 @@ func tmp() (*os.File, func(), error) {
 		tmp.Close()
 	}
 	return tmp, cleanup, nil
-}
-
-func MPVArg(k string, v any) string {
-	if v, ok := v.(bool); ok {
-		if v {
-			return fmt.Sprintf("%s=yes", k)
-		}
-		return fmt.Sprintf("%s=no", k)
-	}
-	return fmt.Sprintf("%s=%v", k, v)
 }
