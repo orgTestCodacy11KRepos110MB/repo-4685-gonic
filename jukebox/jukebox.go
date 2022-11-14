@@ -22,16 +22,18 @@ type Jukebox struct {
 
 func New(sockPath string, mpvExtraArgs []string) (*Jukebox, error) {
 	var mpvArgs []string
-	mpvArgs = append(mpvArgs, "--idle", "--no-config", "--no-video", mpvArg("--audio-display", "no"), mpvArg("--input-ipc-server", sockPath))
+	mpvArgs = append(mpvArgs, "--idle", "--no-config", "--no-video", MPVArg("--audio-display", "no"), MPVArg("--input-ipc-server", sockPath))
 	mpvArgs = append(mpvArgs, mpvExtraArgs...)
+
 	var j Jukebox
 	j.cmd = exec.Command("mpv", mpvArgs...)
 	if err := j.cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start mpv process: %w", err)
 	}
-	j.cmd.Stdout = os.Stdout
-	j.cmd.Stderr = os.Stderr
+
+	// wait for mpv process to be ready please
 	time.Sleep(500 * time.Millisecond)
+
 	j.conn = mpvipc.NewConnection(sockPath)
 	if err := j.conn.Open(); err != nil {
 		return nil, fmt.Errorf("open connection: %w", err)
@@ -198,12 +200,19 @@ func tmp() (*os.File, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create temp file: %w", err)
 	}
-	return tmp, func() {
+	cleanup := func() {
 		os.Remove(tmp.Name())
 		tmp.Close()
-	}, nil
+	}
+	return tmp, cleanup, nil
 }
 
-func mpvArg(k, v string) string {
-	return fmt.Sprintf("%s=%s", k, v)
+func MPVArg(k string, v any) string {
+	if v, ok := v.(bool); ok {
+		if v {
+			return fmt.Sprintf("%s=yes", k)
+		}
+		return fmt.Sprintf("%s=no", k)
+	}
+	return fmt.Sprintf("%s=%v", k, v)
 }

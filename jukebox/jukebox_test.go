@@ -1,16 +1,21 @@
 package jukebox_test
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/matryer/is"
 	"go.senan.xyz/gonic/jukebox"
+	"golang.org/x/sys/unix"
 )
 
 func TestPlay(t *testing.T) {
 	t.Parallel()
-	j := newMockJukebox(t)
+	j, audioPipe := newJukebox(t)
 	is := is.New(t)
 
 	is.NoErr(j.SetItems([]string{
@@ -50,14 +55,18 @@ func TestPlay(t *testing.T) {
 	is.Equal(status.Playing, true)
 	is.Equal(status.Position, 0)
 
-	// read the whole the first 10s track
+	fmt.Printf("+++ eeeeeeeeee\n")
+	d, err := io.ReadAll(io.LimitReader(audioPipe, mpvPipeSecondsToBytes(5)))
+	fmt.Printf("+++ ffffffffff\n")
+	is.NoErr(err)
+	fmt.Printf("+++ got %d\n", len(d))
 
-	// j.player.ReadN(secsToBytes(10))
-	// time.Sleep(100 * time.Millisecond) // let process exit, skip to next
-
-	// is.Equal(j.GetStatus().CurrentIndex, 1)
-	// is.Equal(j.GetStatus().Playing, true)
-	// is.Equal(j.GetStatus().Position, 0)
+	time.Sleep(10 * time.Second)
+	status, err = j.GetStatus()
+	is.NoErr(err)
+	is.Equal(status.CurrentIndex, 0)
+	is.Equal(status.Playing, true)
+	is.Equal(status.Position, 5)
 
 	// // then half the second
 	// j.player.ReadN(secsToBytes(j.profile, 5))
@@ -173,19 +182,50 @@ func TestPlay(t *testing.T) {
 // }
 
 const (
-	testBitrate = 44_100
+	mpvPipeSampleRate    = 44_100
+	mpvPipeBitDepthBytes = 2
+	mpvPipeNumChannels   = 2
 )
 
-func newMockJukebox(t *testing.T) *jukebox.Jukebox {
+func mpvPipeSecondsToBytes(secs int) int64 {
+	return int64(secs * mpvPipeSampleRate * mpvPipeBitDepthBytes * mpvPipeNumChannels)
+}
+
+func newJukebox(t *testing.T) (*jukebox.Jukebox, *os.File) {
 	sockPath := filepath.Join(t.TempDir(), "sock")
-	j, err := jukebox.New(sockPath, nil)
+	audioPipePath := filepath.Join(t.TempDir(), "audio")
+
+	if err := unix.Mkfifo(audioPipePath, 0777); err != nil {
+		t.Fatalf("create audio pipe: %v", err)
+	}
+
+	j, err := jukebox.New(
+		sockPath,
+		[]string{
+			jukebox.MPVArg("--audio-samplerate", mpvPipeSampleRate),
+			jukebox.MPVArg("--audio-format", "s16"),
+			jukebox.MPVArg("--audio-channels", "stereo"),
+			jukebox.MPVArg("--ao", "null"),
+			jukebox.MPVArg("--ao-pcm-file", audioPipePath),
+			jukebox.MPVArg("--ao-pcm-waveheader", false),
+		})
 	if err != nil {
 		t.Fatalf("error creating jukebox: %v", err)
 	}
 	t.Cleanup(func() {
 		j.Quit()
 	})
-	return j
+
+	fmt.Printf("+++ cccccccccc\n")
+	audioPipe, err := os.OpenFile(audioPipePath, os.O_RDONLY, os.ModeNamedPipe)
+	fmt.Printf("+++ dddddddddd\n")
+	if err != nil {
+		t.Fatalf("error opening audio pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		audioPipe.Close()
+	})
+	return j, audioPipe
 }
 
 // var ErrTimeout = fmt.Errorf("timeout")
@@ -211,7 +251,3 @@ func newMockJukebox(t *testing.T) *jukebox.Jukebox {
 // 		}
 // 	}
 // }
-
-func secsToBytes(secs int) int {
-	return secs * int(testBitrate/8)
-}
