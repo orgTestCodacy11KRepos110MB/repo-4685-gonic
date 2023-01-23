@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://www.github.com/sentriz/gonic/compare/v0.15.2...v0.16.0) (2023-01-23)
+
+
+### Features
+
+* **admin:** support application/x-mpegurl playlist uploads ([6aa4c42](https://www.github.com/sentriz/gonic/commit/6aa4c42ce556f5a503bd9d5a4d1ee957c167dafa)), closes [#282](https://www.github.com/sentriz/gonic/issues/282)
+
+
+### Bug Fixes
+
+* **podcasts:** remove query parameters from URL when getting the extension ([19be6f0](https://www.github.com/sentriz/gonic/commit/19be6f0881ed6c0c3311793c55dbbbe0a5571f51))
+
 ### [0.15.2](https://www.github.com/sentriz/gonic/compare/v0.15.1...v0.15.2) (2022-12-27)
 
 
